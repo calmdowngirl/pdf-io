@@ -1,6 +1,6 @@
 "use client"
 
-import { getAgentResponse, processPDF } from "@/utils/pdfProcessor"
+import { deleteFile, getAgentResponse, processPDF } from "@/utils/pdfProcessor"
 import { useEffect, useRef, useState, ChangeEvent, SubmitEvent } from "react"
 
 export default function Chat() {
@@ -19,15 +19,23 @@ export default function Chat() {
   async function handleSubmit(e: SubmitEvent<HTMLFormElement>) {
     e.preventDefault()
     const userInput = input?.trim()
-    if (!userInput) return
+    if (!userInput || !selectedFile) return
 
     const userMsg = { role: "user" as const, text: input.trim() }
     setMessages((prev) => [...prev, userMsg])
     setInput("")
 
-    const response = await getAgentResponse(userInput)
+    const response = await getAgentResponse(
+      userInput,
+      `${selectedFile.name}##${selectedFile.size}`,
+    )
 
-    setMessages((prev) => [...prev, { role: "assistant", text: `${response}` }])
+    if (response) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: `${response}` },
+      ])
+    }
   }
 
   function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
@@ -49,7 +57,9 @@ export default function Chat() {
     }
   }
 
-  function removeFile() {
+  async function removeFile() {
+    if (!selectedFile) return
+    await deleteFile(`${selectedFile.name}##${selectedFile.size}`)
     setSelectedFile(null)
     setMessages([])
     if (fileInputRef.current) fileInputRef.current.value = ""

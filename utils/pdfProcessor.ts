@@ -6,8 +6,8 @@ import { OpenAIEmbeddings } from "@langchain/openai"
 import { MemoryVectorStore } from "@langchain/classic/vectorstores/memory"
 import { getAgent } from "./agent"
 
-let store: MemoryVectorStore | null = null
-let fileKey: string | null = null
+let fileMap = new Map<string, Document<Record<string, any>>[] | null>()
+let store: MemoryVectorStore
 
 async function loadPDF(filePathOrBlob: string | Blob) {
   const loader = new PDFLoader(filePathOrBlob)
@@ -19,8 +19,8 @@ async function loadPDF(filePathOrBlob: string | Blob) {
 async function splitDocs(docs: Document<Record<string, any>>[]) {
   if (!docs?.length) return null
   const splitter = new RecursiveCharacterTextSplitter({
-    chunkSize: 500,
-    chunkOverlap: 30,
+    chunkSize: 800,
+    chunkOverlap: 50,
   })
   const splitDocs = await splitter.splitDocuments(docs)
   console.log(splitDocs.length)
@@ -37,33 +37,41 @@ async function getStore() {
   return store
 }
 
-export async function processPDF(filePathOrBlob: string | Blob | File) {
-  const k = `${(filePathOrBlob as File).name}${(filePathOrBlob as File).size}`
-  if (fileKey && fileKey === k) {
+async function processPDF(
+  filePathOrBlob: string | Blob | File,
+): Promise<boolean> {
+  if (!store) await getStore()
+
+  const k = `${(filePathOrBlob as File).name}##${(filePathOrBlob as File).size}`
+  if (fileMap.has(k)) {
     return true
   }
 
-  fileKey = k
-  store = await getStore()
   const docs = await splitDocs(await loadPDF(filePathOrBlob))
   if (!docs?.length) {
-    fileKey = null
-    store.memoryVectors = []
+    fileMap.delete(k)
     return false
   }
 
-  store.memoryVectors = []
-  await store.addDocuments(docs!)
+  fileMap.set(k, docs)
 
+  if (!isFileInStore(k)) await store.addDocuments(docs)
   return true
 }
 
-export async function getAgentResponse(userInput: string) {
+async function getAgentResponse(userInput: string, fileKey: string) {
   if (!store) {
     console.log("store is null")
     return
   }
-  let agent = await getAgent(store)
+
+  if (!userInput || !fileKey) return
+
+  const docs = fileMap.get(fileKey)
+  if (!docs || !docs.length) return
+  if (!isFileInStore(fileKey)) await store.addDocuments(docs)
+
+  let agent = await getAgent(store, filterDocs(docs[0].metadata))
   let chainInputs = { messages: [{ role: "user", content: userInput }] }
   let response: string = ""
 
@@ -71,7 +79,39 @@ export async function getAgentResponse(userInput: string) {
     streamMode: "values",
   })) {
     const lastMessage = step.messages[step.messages.length - 1]
-    response += lastMessage.content.replace(userInput, "").trim()
+    response += lastMessage.content
   }
-  return response
+  return response.replace(userInput, "").trim()
 }
+
+function isFileInStore(fileKey: string) {
+  const docs = fileMap.get(fileKey)
+  const mv = store.memoryVectors
+  if (!mv?.length || !docs?.length) return false
+  return !!mv.find((elem) => elem.content === docs[0].pageContent)
+}
+
+async function deleteFile(fileKey: string) {
+  const docs = fileMap.get(fileKey)
+  if (!docs?.length) return false
+
+  const title = docs[0].metadata?.pdf?.info?.Title
+  const author = docs[0].metadata?.pdf?.info?.Author
+
+  if (store) {
+    const mv = store?.memoryVectors
+    store.memoryVectors = mv.filter(
+      (elem) =>
+        elem.metadata?.pdf?.info?.Title !== title &&
+        elem.metadata?.pdf?.info?.Author !== author,
+    )
+  }
+}
+
+function filterDocs(metadata: Record<string, any>) {
+  return (doc: Document<Record<string, any>>) =>
+    doc.metadata?.pdf?.info?.Title === metadata?.pdf?.info?.Title &&
+    doc.metadata?.pdf?.info?.Author === metadata?.pdf?.info?.Author
+}
+
+export { processPDF, getAgentResponse, deleteFile }
